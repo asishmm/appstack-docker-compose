@@ -1,0 +1,130 @@
+version: '3.9'
+
+networks:
+  frontend_net:
+  backend_net:
+  monitoring_net:
+  logging_net:
+
+volumes:
+  postgres_data:
+  redis_data:
+  elastic_data:
+  logstash_config:
+  prometheus_data:
+  grafana_data:
+
+services:
+  frontend:
+    image: nginx:alpine
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    networks:
+      - frontend_net
+    ports:
+      - "81:80"
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    environment:
+      - DATABASE_URL=postgres://user:pass@db:5432/appdb
+      - CACHE_HOST=redis
+    networks:
+      - frontend_net
+      - backend_net
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+      - POSTGRES_DB=appdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend_net
+
+  redis:
+    image: redis:7
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend_net
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - prometheus_data:/prometheus
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring_net
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    networks:
+      - logging_net
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.10.2
+    volumes:
+      - ./logging/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+      - logstash_config:/usr/share/logstash/config
+    depends_on:
+      - elasticsearch
+    networks:
+      - logging_net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.10.2
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+    networks:
+      - logging_net
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASS}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards/Docker
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+
+    networks:
+      - monitoring_net
+    depends_on:
+      - prometheus
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    ports:
+      - "8083:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - monitoring_net
